@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flying Bird</title>
+<style>
+  :root{
+    --hud:#fff;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  html,body{margin:0;height:100%;overflow:hidden;background:#87ceeb;font-family:'Trebuchet MS',sans-serif;}
+  canvas{display:block;}
+  .hud{position:fixed;color:var(--hud);text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none;user-select:none;}
+  #topleft{top:calc(14px + env(safe-area-inset-top,0px));left:14px;font-size:15px;}
+  #xpbar{width:150px;height:10px;background:rgba(0,0,0,.35);border-radius:5px;margin-top:4px;overflow:hidden;}
+  #xpfill{height:100%;width:0%;background:#ffd54a;}
+  #topright{top:calc(14px + env(safe-area-inset-top,0px));right:14px;text-align:right;font-size:15px;}
+  #botleft{bottom:calc(14px + env(safe-area-inset-bottom,0px));left:14px;font-size:14px;}
+  #botright{bottom:calc(14px + env(safe-area-inset-bottom,0px));right:14px;text-align:right;font-size:13px;line-height:1.5;}
+  #minimap{position:fixed;top:calc(70px + env(safe-area-inset-top,0px));right:14px;width:130px;height:130px;border-radius:8px;background:rgba(10,20,30,.35);border:2px solid rgba(255,255,255,.5);}
+  #banner{top:18%;left:50%;transform:translate(-50%,-20px);font-size:22px;text-align:center;opacity:0;transition:opacity .6s, transform .6s;}
+  #banner.show{opacity:1;transform:translate(-50%,0);}
+  #banner .sub{font-size:15px;opacity:.9;}
+  #startscreen{position:fixed;inset:0;background:linear-gradient(#7ec8f2,#c9eaff);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#20303d;font-family:'Trebuchet MS',sans-serif;z-index:10;}
+  #startscreen h1{font-size:36px;margin:0 0 6px;}
+  #startscreen p{margin:2px 0;font-size:14px;opacity:.85;}
+  #startBtn{margin-top:18px;padding:12px 28px;font-size:17px;border:none;border-radius:8px;background:#2c6e49;color:white;cursor:pointer;}
+  #startBtn:active{transform:scale(.97);}
+</style>
+</head>
+<body>
+<div id="startscreen">
+  <h1>🐦 Flying Bird</h1>
+  <p>A voxel-style world. Fly wherever you like.</p>
+  <p>W/S speed · A/D turn · Space climb · Shift dive · V camera</p>
+  <button id="startBtn">Take Flight</button>
+</div>
+
+<div class="hud" id="topleft">🐦 LEVEL <span id="lvl">1</span><div id="xpbar"><div id="xpfill"></div></div></div>
+<div class="hud" id="topright">🧭 <span id="compass">N</span><br>🌍 <span id="areaname">Unnamed Sky</span></div>
+<canvas class="hud" id="minimap" width="130" height="130"></canvas>
+<div class="hud" id="botleft">SPEED: <span id="speed">0</span><br>ALTITUDE: <span id="alt">0</span>m</div>
+<div class="hud" id="botright">WASD Fly<br>SPACE Up · SHIFT Dive<br>V Camera · E Land/Takeoff</div>
+<div class="hud" id="banner">🌲 NEW AREA DISCOVERED<div class="sub" id="bannersub">Emerald Forest</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+let scene,camera,renderer,bird,water,sun,moon,hemi,dirLight;
+let clock=new THREE.Clock();
+let keys={};
+let yaw=0,pitch=0,speed=18,firstPerson=false;
+let velY=0, grounded=false, xp=0, level=1;
+const WORLD=1000;
+const discovered=new Set();
+const POIS=[
+ {x:120,z:-90,name:"Emerald Forest"},
+ {x:-260,z:170,name:"Golden Plains"},
+ {x:330,z:320,name:"Snowy Peaks"},
+ {x:-140,z:-350,name:"Crystal Lake"},
+ {x:0,z:0,name:"Sunset Village"},
+ {x:-390,z:-90,name:"Whispering Valley"},
+ {x:430,z:-260,name:"Blue Ocean"},
+ {x:200,z:-410,name:"Ancient Ruins"},
+ {x:-320,z:-260,name:"Scorched Dunes"},
+ {x:60,z:410,name:"Frostfall Glacier"},
+ {x:-440,z:300,name:"The Ancient Spire"}
+];
+function biomeNoise(x,z){return Math.sin(x*0.0037)*Math.cos(z*0.0032);}
+
+function getHeight(x,z){
+  let h=0;
+  h+=Math.sin(x*0.02)*8+Math.cos(z*0.023)*8;
+  h+=Math.sin(x*0.05+z*0.03)*4;
+  h+=Math.sin(x*0.007)*Math.cos(z*0.007)*26;
+  h+=Math.cos(x*0.011-z*0.009)*10;
+  return h;
+}
+
+function init(){
+  scene=new THREE.Scene();
+  scene.fog=new THREE.Fog(0x9fd3f0,120,420);
+  camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,0.5,900);
+  renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  document.body.appendChild(renderer.domElement);
+
+  hemi=new THREE.HemisphereLight(0xbfe3ff,0x445533,0.9);
+  scene.add(hemi);
+  dirLight=new THREE.DirectionalLight(0xffffff,1);
+  dirLight.position.set(100,150,50);
+  scene.add(dirLight);
+
+  sun=new THREE.Mesh(new THREE.SphereGeometry(10,12,12),new THREE.MeshBasicMaterial({color:0xfff2b0}));
+  moon=new THREE.Mesh(new THREE.SphereGeometry(6,12,12),new THREE.MeshBasicMaterial({color:0xcdd6ff}));
+  scene.add(sun,moon);
+
+  const starPos=[];
+  for(let i=0;i<800;i++){
+    const r=380;
+    const th=Math.random()*Math.PI*2, ph=Math.random()*Math.PI*0.5;
+    starPos.push(r*Math.cos(th)*Math.cos(ph), Math.abs(r*Math.sin(ph))+40, r*Math.sin(th)*Math.cos(ph));
+  }
+  const starGeo=new THREE.BufferGeometry();
+  starGeo.setAttribute('position',new THREE.Float32BufferAttribute(starPos,3));
+  const starMat=new THREE.PointsMaterial({color:0xffffff,size:1.6,transparent:true,opacity:0});
+  window.stars=new THREE.Points(starGeo,starMat);
+  scene.add(window.stars);
+
+  buildTerrain();
+  buildWater();
+  buildTrees();
+  buildClouds();
+  buildLandmarks();
+  buildBirdFlock();
+  buildBird();
+
+  window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+  window.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true; if(e.key.toLowerCase()==='v') firstPerson=!firstPerson;});
+  window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+
+  animate();
+}
+
+function buildTerrain(){
+  const seg=110;
+  const geo=new THREE.PlaneGeometry(WORLD,WORLD,seg,seg);
+  geo.rotateX(-Math.PI/2);
+  const pos=geo.attributes.position;
+  const colors=[];
+  const c=new THREE.Color();
+  for(let i=0;i<pos.count;i++){
+    const x=pos.getX(i), z=pos.getZ(i);
+    const h=getHeight(x,z);
+    pos.setY(i,h);
+    const b=biomeNoise(x,z);
+    if(h<-1) c.setHex(0xd8c98a);
+    else if(b<-0.4){
+      c.setHex(h>26?0xb99a63:(h>10?0xd9b877:0xe3c98f));
+    } else if(b>0.4){
+      c.setHex(h>6?0xf4f7fa:0xd9e6ee);
+    } else if(h<8) c.setHex(0x4c9a3f);
+    else if(h<20) c.setHex(0x5f7a3b);
+    else if(h<32) c.setHex(0x8a7a63);
+    else c.setHex(0xf2f5f7);
+    colors.push(c.r,c.g,c.b);
+  }
+  geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  geo.computeVertexNormals();
+  const mat=new THREE.MeshLambertMaterial({vertexColors:true,flatShading:true});
+  const mesh=new THREE.Mesh(geo,mat);
+  mesh.receiveShadow=false;
+  scene.add(mesh);
+}
+
+function buildWater(){
+  const geo=new THREE.PlaneGeometry(WORLD*1.4,WORLD*1.4,48,48);
+  geo.rotateX(-Math.PI/2);
+  const mat=new THREE.MeshPhongMaterial({color:0x2f7bbf,transparent:true,opacity:0.78,shininess:80});
+  water=new THREE.Mesh(geo,mat);
+  water.position.y=-1;
+  scene.add(water);
+}
+
+function buildTrees(){
+  const trunkGeo=new THREE.CylinderGeometry(0.4,0.5,3,6);
+  const leafGeo=new THREE.ConeGeometry(2.2,4,7);
+  const trunkMat=new THREE.MeshLambertMaterial({color:0x6b4a2f});
+  const leafMat=new THREE.MeshLambertMaterial({color:0x2f7a35});
+  const count=420;
+  const trunks=new THREE.InstancedMesh(trunkGeo,trunkMat,count);
+  const leaves=new THREE.InstancedMesh(leafGeo,leafMat,count);
+  const m=new THREE.Object3D();
+  let n=0;
+  for(let i=0;i<count*4 && n<count;i++){
+    const x=(Math.random()-0.5)*WORLD*0.92;
+    const z=(Math.random()-0.5)*WORLD*0.92;
+    const h=getHeight(x,z);
+    if(h<1.5||h>22||Math.abs(biomeNoise(x,z))>0.4) continue;
+    m.position.set(x,h+1.5,z);
+    m.scale.setScalar(0.8+Math.random()*0.7);
+    m.updateMatrix();
+    trunks.setMatrixAt(n,m.matrix);
+    m.position.y=h+4;
+    m.updateMatrix();
+    leaves.setMatrixAt(n,m.matrix);
+    n++;
+  }
+  scene.add(trunks,leaves);
+}
+
+function buildClouds(){
+  const geo=new THREE.SphereGeometry(1,8,8);
+  const mat=new THREE.MeshLambertMaterial({color:0xffffff,transparent:true,opacity:0.85});
+  window.clouds=[];
+  for(let i=0;i<26;i++){
+    const grp=new THREE.Group();
+    const puffs=3+Math.floor(Math.random()*3);
+    for(let j=0;j<puffs;j++){
+      const s=new THREE.Mesh(geo,mat);
+      s.position.set((Math.random()-0.5)*10,(Math.random()-0.5)*2,(Math.random()-0.5)*10);
+      s.scale.setScalar(3+Math.random()*3);
+      grp.add(s);
+    }
+    grp.position.set((Math.random()-0.5)*WORLD,55+Math.random()*40,(Math.random()-0.5)*WORLD);
+    grp.userData.speed=0.4+Math.random()*0.6;
+    scene.add(grp);
+    window.clouds.push(grp);
+  }
+}
+
+function buildLandmarks(){
+  const spire=new THREE.Group();
+  const stoneMat=new THREE.MeshLambertMaterial({color:0x8c8378});
+  const segs=7;
+  for(let i=0;i<segs;i++){
+    const r=9-(i*1.0);
+    const seg=new THREE.Mesh(new THREE.CylinderGeometry(r*0.85,r,10,8),stoneMat);
+    seg.position.y=i*9.5;
+    spire.add(seg);
+  }
+  const cap=new THREE.Mesh(new THREE.ConeGeometry(4,14,8),new THREE.MeshLambertMaterial({color:0xdfe6ea}));
+  cap.position.y=segs*9.5+6;
+  spire.add(cap);
+  const lm=POIS.find(p=>p.name==="The Ancient Spire");
+  spire.position.set(lm.x,getHeight(lm.x,lm.z),lm.z);
+  scene.add(spire);
+}
+
+function buildBird(){
+  bird=new THREE.Group();
+  const bodyMat=new THREE.MeshLambertMaterial({color:0xd94f3d});
+  const bellyMat=new THREE.MeshLambertMaterial({color:0xf2e0b8});
+  const body=new THREE.Mesh(new THREE.SphereGeometry(0.8,10,8),bodyMat);
+  body.scale.set(1,0.9,1.6);
+  bird.add(body);
+  const belly=new THREE.Mesh(new THREE.SphereGeometry(0.55,8,6),bellyMat);
+  belly.position.set(0,-0.25,0.1);
+  bird.add(belly);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.45,10,8),bodyMat);
+  head.position.set(0,0.35,1.1);
+  bird.add(head);
+  const beak=new THREE.Mesh(new THREE.ConeGeometry(0.15,0.5,6),new THREE.MeshLambertMaterial({color:0xf2c14e}));
+  beak.rotation.x=Math.PI/2;
+  beak.position.set(0,0.32,1.55);
+  bird.add(beak);
+  const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.4,0.7,8),bodyMat);
+  neck.position.set(0,0.28,0.75);
+  neck.rotation.x=0.5;
+  bird.add(neck);
+
+  const eyeMat=new THREE.MeshBasicMaterial({color:0xffffff});
+  const irisMat=new THREE.MeshBasicMaterial({color:0x3a2a15});
+  const pupilMat=new THREE.MeshBasicMaterial({color:0x000000});
+  [-1,1].forEach(s=>{
+    const eye=new THREE.Mesh(new THREE.SphereGeometry(0.11,8,8),eyeMat);
+    eye.position.set(0.32*s,0.42,1.35);
+    const iris=new THREE.Mesh(new THREE.SphereGeometry(0.065,8,8),irisMat);
+    iris.position.set(0.06*s,0,0.07);
+    eye.add(iris);
+    const pupil=new THREE.Mesh(new THREE.SphereGeometry(0.03,6,6),pupilMat);
+    pupil.position.set(0.06*s,0,0.11);
+    eye.add(pupil);
+    bird.add(eye);
+  });
+
+  const tailGroup=new THREE.Group();
+  const tailMat=new THREE.MeshLambertMaterial({color:0xb8392b,side:THREE.DoubleSide});
+  for(let i=-2;i<=2;i++){
+    const feather=new THREE.Mesh(new THREE.PlaneGeometry(0.28,1.1),tailMat);
+    feather.position.set(i*0.22,0.05-Math.abs(i)*0.04,-1.35-Math.abs(i)*0.05);
+    feather.rotation.x=-Math.PI/2+0.15;
+    tailGroup.add(feather);
+  }
+  bird.add(tailGroup);
+  bird.userData.tail=tailGroup;
+
+  const footMat=new THREE.MeshLambertMaterial({color:0xe0a94e});
+  [-1,1].forEach(s=>{
+    const leg=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,0.45,5),footMat);
+    leg.position.set(0.25*s,-0.55,0.1);
+    bird.add(leg);
+    for(let t=-1;t<=1;t++){
+      const toe=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.3,4),footMat);
+      toe.position.set(0.25*s+t*0.08,-0.78,0.25+Math.abs(t)*0.05);
+      toe.rotation.x=Math.PI/2.3;
+      bird.add(toe);
+    }
+  });
+  bird.userData.legs=bird.children.filter(c=>c.geometry&&c.geometry.type==='CylinderGeometry'&&c.material===footMat);
+
+  const wingMat=new THREE.MeshLambertMaterial({color:0xb8392b,side:THREE.DoubleSide});
+  function makeWing(sign){
+    const grp=new THREE.Group();
+    const upper=new THREE.Mesh(new THREE.PlaneGeometry(1.4,0.75),wingMat);
+    upper.position.x=0.7*sign;
+    grp.add(upper);
+    const primaries=new THREE.Group();
+    for(let i=0;i<5;i++){
+      const f=new THREE.Mesh(new THREE.PlaneGeometry(0.32,0.85),wingMat);
+      f.position.set((1.4+i*0.28)*sign,-0.15-i*0.04,0);
+      f.rotation.z=sign*0.06*i;
+      primaries.add(f);
+    }
+    grp.add(primaries);
+    grp.userData.primaries=primaries;
+    grp.position.set(0.3*sign,0.15,0);
+    return grp;
+  }
+  const wingL=makeWing(-1), wingR=makeWing(1);
+  bird.add(wingL,wingR);
+  bird.userData.wingL=wingL;
+  bird.userData.wingR=wingR;
+  bird.position.set(0,40,60);
+  scene.add(bird);
+}
+
+function updateBanner(){
+  for(const p of POIS){
+    const d=Math.hypot(bird.position.x-p.x,bird.position.z-p.z);
+    if(d<28 && !discovered.has(p.name)){
+      discovered.add(p.name);
+      document.getElementById('bannersub').textContent=p.name;
+      const b=document.getElementById('banner');
+      b.classList.add('show');
+      setTimeout(()=>b.classList.remove('show'),3000);
+      document.getElementById('areaname').textContent=p.name;
+      xp+=50;
+    }
+  }
+}
+
+function drawMinimap(){
+  const cv=document.getElementById('minimap');
+  const ctx=cv.getContext('2d');
+  const scale=130/WORLD;
+  const px=65+bird.position.x*scale, py=65+bird.position.z*scale;
+  ctx.fillStyle='rgba(70,140,85,.9)';
+  ctx.fillRect(0,0,130,130);
+  POIS.forEach(p=>{
+    const x=65+p.x*scale, y=65+p.z*scale;
+    ctx.fillStyle=discovered.has(p.name)?'#ffd54a':'rgba(255,255,255,.55)';
+    ctx.beginPath();ctx.arc(x,y,2.5,0,7);ctx.fill();
+  });
+  ctx.save();
+  ctx.translate(px,py);
+  ctx.rotate(yaw);
+  ctx.fillStyle='#ff5a3c';
+  ctx.beginPath();
+  ctx.moveTo(0,-6);ctx.lineTo(4,5);ctx.lineTo(-4,5);ctx.closePath();ctx.fill();
+  ctx.restore();
+}
+
+function buildBirdFlock(){
+  const geo=new THREE.ConeGeometry(0.5,1.4,4);
+  const mat=new THREE.MeshLambertMaterial({color:0x333333});
+  window.flocks=[];
+  for(let f=0;f<4;f++){
+    const center=new THREE.Vector3((Math.random()-0.5)*WORLD*0.6,50+Math.random()*30,(Math.random()-0.5)*WORLD*0.6);
+    const members=[];
+    for(let i=0;i<6;i++){
+      const b=new THREE.Mesh(geo,mat);
+      b.rotation.x=Math.PI/2;
+      scene.add(b);
+      members.push({mesh:b,offset:Math.random()*Math.PI*2,r:4+Math.random()*6,h:(Math.random()-0.5)*4});
+    }
+    window.flocks.push({center,members,speed:0.3+Math.random()*0.3});
+  }
+}
+
+function compassDir(y){
+  const dirs=['N','NE','E','SE','S','SW','W','NW'];
+  let a=(-y+Math.PI*2)%(Math.PI*2);
+  const idx=Math.round(a/(Math.PI/4))%8;
+  return dirs[idx];
+}
+
+let dayT=0.25;
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05);
+
+  const turnInput=(keys['a']?1:0)-(keys['d']?1:0);
+  yaw+=turnInput*1.35*dt;
+  window.roll=(window.roll||0)+((-turnInput*0.7)-(window.roll||0))*Math.min(5*dt,1);
+
+  let thrust=0;
+  if(keys['w']) thrust=26;
+  if(keys['s']) thrust=-14;
+  speed+=thrust*dt;
+  speed-=speed*0.35*dt; // drag
+  speed=THREE.MathUtils.clamp(speed,3,58);
+
+  let targetPitch=0;
+  if(keys[' ']) targetPitch=0.5;
+  if(keys['shift']) targetPitch=-0.65;
+  if(keys['e']&&!grounded) targetPitch=-0.35;
+  pitch+=(targetPitch-pitch)*Math.min(5*dt,1);
+
+  const dir=new THREE.Vector3(
+    Math.sin(yaw)*Math.cos(pitch),
+    Math.sin(pitch),
+    Math.cos(yaw)*Math.cos(pitch)
+  );
+  bird.position.addScaledVector(dir,speed*dt);
+  const lift=Math.min(speed*0.24,9)*dt;
+  const gravity=6*dt;
+  bird.position.y+=lift-gravity;
+  bird.position.x=THREE.MathUtils.clamp(bird.position.x,-WORLD/2+5,WORLD/2-5);
+  bird.position.z=THREE.MathUtils.clamp(bird.position.z,-WORLD/2+5,WORLD/2-5);
+
+  const groundH=getHeight(bird.position.x,bird.position.z);
+  if(bird.position.y<groundH+1.5){
+    bird.position.y=groundH+1.5;
+    speed=Math.max(speed*0.9,3);
+    grounded=true;
+  } else grounded=false;
+  if(bird.position.y>160) bird.position.y=160;
+
+  bird.rotation.set(pitch*0.6+(thrust>0?0.05:0),yaw,window.roll,'YXZ');
+
+  const gliding=!keys['w']&&!keys['s']&&Math.abs(turnInput)<0.1;
+  const flapSpeed=grounded?4:(gliding?2.5:10+speed*0.15);
+  const flapAmt=gliding?0.15:0.9;
+  const flap=Math.sin(clock.elapsedTime*flapSpeed)*flapAmt;
+  bird.userData.wingL.rotation.z=flap*0.6+0.15-turnInput*0.25;
+  bird.userData.wingR.rotation.z=-flap*0.6-0.15-turnInput*0.25;
+  const spread=gliding?0.5:(pitch<-0.3?-0.3:0);
+  bird.userData.wingL.userData.primaries.rotation.z=spread*0.3;
+  bird.userData.wingR.userData.primaries.rotation.z=-spread*0.3;
+  bird.userData.tail.rotation.x=grounded?0.3:-turnInput*0.2;
+  if(bird.userData.legs) bird.userData.legs.forEach(l=>l.visible=grounded||bird.position.y-groundH<3);
+
+  const back=new THREE.Vector3().copy(dir).multiplyScalar(-8);
+  let camPos;
+  if(firstPerson){
+    camPos=bird.position.clone().add(new THREE.Vector3(0,0.6,0.6));
+    camera.position.lerp(camPos,0.5);
+    camera.lookAt(bird.position.clone().add(dir.clone().multiplyScalar(10)));
+  } else {
+    camPos=bird.position.clone().add(back).add(new THREE.Vector3(0,3.5,0));
+    camera.position.lerp(camPos,0.08);
+    camera.lookAt(bird.position);
+  }
+
+  window.clouds.forEach(c=>{c.position.x+=c.userData.speed*dt*3; if(c.position.x>WORLD/2+20) c.position.x=-WORLD/2-20;});
+
+  window.flocks.forEach(fl=>{
+    fl.center.x+=fl.speed*dt*2;
+    if(fl.center.x>WORLD/2+20) fl.center.x=-WORLD/2-20;
+    fl.members.forEach(m=>{
+      const a=clock.elapsedTime*fl.speed+m.offset;
+      m.mesh.position.set(fl.center.x+Math.cos(a)*m.r,fl.center.y+m.h,fl.center.z+Math.sin(a)*m.r);
+      m.mesh.rotation.y=-a;
+    });
+  });
+
+  const wp=water.geometry.attributes.position;
+  const t=clock.elapsedTime;
+  for(let i=0;i<wp.count;i+=3){
+    const x=wp.getX(i), z=wp.getZ(i);
+    wp.setY(i,Math.sin(x*0.05+t*1.1)*0.35+Math.cos(z*0.04+t*0.8)*0.3);
+  }
+  wp.needsUpdate=true;
+
+  dayT=(dayT+dt*0.01)%1;
+  const ang=dayT*Math.PI*2;
+  sun.position.set(Math.cos(ang)*300,Math.sin(ang)*300,-100);
+  moon.position.set(-Math.cos(ang)*300,-Math.sin(ang)*300,-100);
+  const dayAmt=Math.max(0,Math.sin(ang));
+  dirLight.position.copy(sun.position);
+  dirLight.intensity=0.3+dayAmt*1.0;
+  const skyDay=new THREE.Color(0x9fd3f0), skyNight=new THREE.Color(0x0b1330), skyDawn=new THREE.Color(0xffb27a);
+  let sky=new THREE.Color();
+  if(dayAmt>0.15){ sky.copy(skyDay).lerp(skyDawn, Math.max(0,1-dayAmt)*0.5); }
+  else { sky.copy(skyNight).lerp(skyDawn, Math.max(0,0.3-Math.abs(dayAmt))*2); }
+  renderer.setClearColor(sky);
+  scene.fog.color.copy(sky);
+  hemi.intensity=0.4+dayAmt*0.6;
+  window.stars.material.opacity=THREE.MathUtils.clamp(1-dayAmt*3,0,0.9);
+  window.stars.position.copy(bird.position);
+
+  xp+=speed*dt*0.15;
+  if(xp>=level*300){xp-=level*300;level++;}
+  document.getElementById('lvl').textContent=level;
+  document.getElementById('xpfill').style.width=Math.min(100,(xp/(level*300))*100)+'%';
+  document.getElementById('speed').textContent=Math.round(speed);
+  document.getElementById('alt').textContent=Math.max(0,Math.round(bird.position.y-groundH));
+  document.getElementById('compass').textContent=compassDir(yaw);
+  updateBanner();
+  drawMinimap();
+
+  renderer.render(scene,camera);
+}
+
+document.getElementById('startBtn').addEventListener('click',()=>{
+  document.getElementById('startscreen').style.display='none';
+  if(!scene) init();
+});
+</script>
+</body>
+</html>
